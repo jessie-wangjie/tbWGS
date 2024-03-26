@@ -1,0 +1,175 @@
+//
+nextflow.enable.dsl=2
+
+// Define the default parameters
+params.dragen_path = ''
+params.target_bed = ''
+params.snpeff_db = 'GRCh38.99'
+params.outdir = './'
+
+process SNV_VARIANT_ANNOTATE {
+    publishDir "${params.outdir}", mode: 'copy'
+
+    input:
+    tuple val(meta), path(vcf), path(vcf_index)
+    val db
+    path target_bed
+
+    output:
+    tuple val(meta), path("*.ann.vcf"), emit: vcf
+    tuple val(meta), path("*.ann.high_risk.csv"), emit: table
+
+    script:
+    """
+    snpeff -canon -noInteraction -motif $db -filterInterval $target_bed -stats ${meta}.summary.html $vcf > ${meta}.ann.vcf
+
+    # only keep the variants with PASS and high risk
+    bcftools view ${meta}.ann.vcf -i 'FILTER="PASS" && ANN ~ "HIGH"' \\
+        | bcftools query -f '%CHROM\\t%POS\\t%REF\\t%ALT\\t%QUAL\\t%FILTER\\t[%GT]\\t%QD\\t%ANN\\n' \\
+        | awk '{
+            OFS="\\t";
+            split(\$9,ann,",");
+            annotation="";
+            for(i in ann)
+            {
+                split(ann[i],f,"|");
+                if(f[3]=="HIGH")
+                {
+                    annotation=annotation"\\t"f[4]"\\t"f[1]"|"f[2]"|"f[3]
+                }
+            }
+            print \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8annotation
+            }' > ${meta}.ann.high_risk.csv
+    """
+
+}
+
+process CNV_VARIANT_ANNOTATE {
+    publishDir "${params.outdir}", mode: 'copy'
+
+    input:
+    tuple val(meta), path(vcf), path(vcf_index)
+    val db
+    path target_bed
+
+    output:
+    tuple val(meta), path("*.ann.vcf"), emit: vcf
+    tuple val(meta), path("*.ann.high_risk.csv"), emit: table
+
+    script:
+    """
+    snpeff -canon -noInteraction -motif $db -filterInterval $target_bed -stats ${meta}.summary.html $vcf > ${meta}.cnv.ann.vcf
+
+    # only keep the variants with PASS and high risk
+    bcftools view ${meta}.cnv.ann.vcf -i 'FILTER="PASS" && SVTYPE="CNV" && ANN ~ "HIGH"' \\
+        | bcftools query -f '%ID\\t%CHROM\\t%POS\\t%END\\t%ALT\\t%QUAL\\t%FILTER\\t[%GT]\\t%ANN\\n' \\
+        | awk '{
+            OFS="\\t";
+            split(\$9,ann,",");
+            annotation="";
+            for(i in ann)
+            {
+                split(ann[i],f,"|");
+                if(f[3]=="HIGH")
+                {
+                    annotation=annotation"\\t"f[4]"\\t"f[1]"|"f[2]"|"f[3]
+                }
+            }
+            print \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8annotation
+            }' > ${meta}.cnv.ann.high_risk.csv
+    """
+
+}
+
+process SV_VARIANT_ANNOTATE {
+    publishDir "${params.outdir}", mode: 'copy'
+
+    input:
+    tuple val(meta), path(vcf), path(vcf_index)
+    val db
+    path target_bed
+
+    output:
+    tuple val(meta), path("*.ann.vcf"), emit: vcf
+    tuple val(meta), path("*.ann.high_risk.csv"), emit: table
+
+    script:
+    """
+    snpeff -canon -noInteraction -motif $db -filterInterval $target_bed -stats ${meta}.summary.html $vcf > ${meta}.sv.ann.vcf
+
+    # only keep the variants with PASS and high risk
+    ## INS/DEL/DUP
+    bcftools view ${meta}.sv.ann.vcf -i 'FILTER="PASS" && ANN ~ "HIGH" && (SVTYPE="DEL" || SVTYPE="DUP" || SVTYPE="INS")' \\
+        | bcftools query -f '%ID\\t%CHROM\\t%POS\\t%END\\t%ALT\\t%QUAL\\t%FILTER\\t[%GT]\\t%ANN\\n' \\
+        | awk '{
+            OFS="\\t";
+            split(\$9,ann,",");
+            annotation="";
+            for(i in ann)
+            {
+                split(ann[i],f,"|");
+                if(f[3]=="HIGH")
+                {
+                    annotation=annotation"\\t"f[4]"\\t"f[1]"|"f[2]"|"f[3]
+                }
+            }
+            print \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8annotation
+            }' > ${meta}.sv.ann.high_risk.csv
+
+    ## BND
+    bcftools view ${meta}.sv.ann.vcf -i 'FILTER="PASS" && ANN ~ "HIGH" && SVTYPE="BND"' \\
+        | bcftools query -f '%ID\\t%CHROM\\t%POS\\t%POS\\t%ALT\\t%QUAL\\t%FILTER\\t[%GT]\\t%ANN\\n' \\
+        | awk '{
+            OFS="\\t";
+            split(\$9,ann,",");
+            annotation="";
+            for(i in ann)
+            {
+                split(ann[i],f,"|");
+                if(f[3]=="HIGH")
+                {
+                    annotation=annotation"\\t"f[4]"\\t"f[1]"|"f[2]"|"f[3]
+                }
+            }
+            print \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8annotation
+            }' >> ${meta}.sv.ann.high_risk.csv
+    """
+}
+
+workflow {
+
+    // load SNV vcf
+    snv_vcf = Channel.fromPath("${params.dragen_path}/*.hard-filtered.vcf.{gz,gz.tbi}")
+        .collect()
+        .map { if (it[0].extension == "tbi")
+                { [it[1].name.minus(".hard-filtered.vcf.gz"), it[1], it[0]] }
+               else
+                { [it[0].name.minus(".hard-filtered.vcf.gz"), it[0], it[1]] }
+             }
+
+    // load CNV vcf
+    cnv_vcf = Channel.fromPath("${params.dragen_path}/*.cnv.vcf.{gz,gz.tbi}")
+        .collect()
+        .map { if (it[0].extension == "tbi")
+                { [it[1].name.minus(".cnv.vcf.gz"), it[1], it[0]] }
+               else
+                { [it[0].name.minus(".cnv.vcf.gz"), it[0], it[1]] }
+             }
+
+    // load SV vcf
+    sv_vcf = Channel.fromPath("${params.dragen_path}/*.sv.vcf.{gz,gz.tbi}")
+        .collect()
+        .map { if (it[0].extension == "tbi")
+                { [it[1].name.minus(".sv.vcf.gz"), it[1], it[0]] }
+               else
+                { [it[0].name.minus(".sv.vcf.gz"), it[0], it[1]] }
+             }
+
+    // small variants annotation
+    SNV_VARIANT_ANNOTATE(snv_vcf, params.snpeff_db, params.target_bed)
+    // CNV variants annotation
+    CNV_VARIANT_ANNOTATE(cnv_vcf, params.snpeff_db, params.target_bed)
+    // SV variants annotation
+    SV_VARIANT_ANNOTATE(sv_vcf, params.snpeff_db, params.target_bed)
+
+}
