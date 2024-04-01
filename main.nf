@@ -5,7 +5,9 @@ nextflow.enable.dsl=2
 params.dragen_path = ''
 params.target_bed = ''
 params.snpeff_db = 'GRCh38.99'
+params.reference_path = '/home/ubuntu/annotation/fasta/hg38.fa'
 params.outdir = './'
+params.samtools_path = '/home/ubuntu/bin/samtools'
 
 process SNV_VARIANT_ANNOTATE {
     publishDir "${params.outdir}", mode: 'copy'
@@ -83,6 +85,7 @@ process CNV_VARIANT_ANNOTATE {
 
 process SV_VARIANT_ANNOTATE {
     publishDir "${params.outdir}", mode: 'copy'
+    errorStrategy 'ignore'
 
     input:
     tuple val(meta), path(vcf), path(vcf_index)
@@ -90,20 +93,27 @@ process SV_VARIANT_ANNOTATE {
     path target_bed
 
     output:
-    tuple val(meta), path("*.ann.vcf"), emit: vcf
+    tuple val(meta), path("*.sv.std.vcf"), emit: vcf
+    tuple val(meta), path("*.ann.vcf"), emit: ann_vcf
     tuple val(meta), path("*.ann.high_risk.csv"), emit: table
 
     script:
     """
-    snpeff -canon -noInteraction -motif $db -filterInterval $target_bed -stats ${meta}.summary.html $vcf > ${meta}.sv.ann.vcf
+    # convert BND to inversion
+    convertInversion.py ${params.samtools_path} ${params.reference_path} $vcf | bcftools view - -o tmp.vcf.gz -O z
+
+    # snpEff annotation
+    snpeff -canon -noInteraction -motif $db -filterInterval $target_bed -stats ${meta}.summary.html tmp.vcf.gz > ${meta}.sv.ann.vcf
+
+    # standardize vcf
+    convertBND.py ${meta}.sv.ann.vcf | bcftools view - -o ${meta}.sv.ann.std.vcf.gz -O z
 
     # only keep the variants with PASS and high risk
-    ## INS/DEL/DUP
-    bcftools view ${meta}.sv.ann.vcf -i 'FILTER="PASS" && ANN ~ "HIGH" && (SVTYPE="DEL" || SVTYPE="DUP" || SVTYPE="INS")' \\
-        | bcftools query -f '%ID\\t%CHROM\\t%POS\\t%END\\t%ALT\\t%QUAL\\t%FILTER\\t[%GT]\\t%ANN\\n' \\
+    bcftools view ${meta}.sv.ann.std.vcf.gz -i 'FILTER="PASS" && ANN ~ "HIGH"' \\
+        | bcftools query -f '%ID\\t%CHROM\\t%POS\\t%CHR2\\t%END\\t%QUAL\\t%SVLEN\\t%FILTER\\t[%GT]\\t%ANN\\n' \\
         | awk '{
             OFS="\\t";
-            split(\$9,ann,",");
+            split(\$10,ann,",");
             annotation="";
             for(i in ann)
             {
@@ -113,28 +123,11 @@ process SV_VARIANT_ANNOTATE {
                     annotation=annotation"\\t"f[4]"\\t"f[1]"|"f[2]"|"f[3]
                 }
             }
-            print \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8annotation
+            print \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9annotation
             }' > ${meta}.sv.ann.high_risk.csv
-
-    ## BND
-    bcftools view ${meta}.sv.ann.vcf -i 'FILTER="PASS" && ANN ~ "HIGH" && SVTYPE="BND"' \\
-        | bcftools query -f '%ID\\t%CHROM\\t%POS\\t%POS\\t%ALT\\t%QUAL\\t%FILTER\\t[%GT]\\t%ANN\\n' \\
-        | awk '{
-            OFS="\\t";
-            split(\$9,ann,",");
-            annotation="";
-            for(i in ann)
-            {
-                split(ann[i],f,"|");
-                if(f[3]=="HIGH")
-                {
-                    annotation=annotation"\\t"f[4]"\\t"f[1]"|"f[2]"|"f[3]
-                }
-            }
-            print \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8annotation
-            }' >> ${meta}.sv.ann.high_risk.csv
     """
 }
+
 
 workflow {
 
@@ -172,4 +165,9 @@ workflow {
     // SV variants annotation
     SV_VARIANT_ANNOTATE(sv_vcf, params.snpeff_db, params.target_bed)
 
+}
+
+workflow.onComplete {
+    println "Pipeline completed at: $workflow.complete"
+    println "Execution status: ${ workflow.success ? 'OK' : 'failed' }"
 }
