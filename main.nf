@@ -8,6 +8,7 @@ params.snpeff_db = 'GRCh38.99'
 params.reference_path = '/home/ubuntu/annotation/fasta/hg38.fa'
 params.outdir = './'
 params.samtools_path = '/home/ubuntu/bin/samtools'
+params.rmsk_path = '/home/ubuntu/annotation/hg38.rmsk.bed'
 
 process SNV_VARIANT_ANNOTATE {
     publishDir "${params.outdir}", mode: 'copy'
@@ -93,8 +94,7 @@ process SV_VARIANT_ANNOTATE {
     path target_bed
 
     output:
-    tuple val(meta), path("*.sv.std.vcf"), emit: vcf
-    tuple val(meta), path("*.ann.vcf"), emit: ann_vcf
+    tuple val(meta), path("*.sv.ann.std.vcf.gz"), emit: vcf
     tuple val(meta), path("*.ann.high_risk.csv"), emit: table
 
     script:
@@ -110,10 +110,10 @@ process SV_VARIANT_ANNOTATE {
 
     # only keep the variants with PASS and high risk
     bcftools view ${meta}.sv.ann.std.vcf.gz -i 'FILTER="PASS" && ANN ~ "HIGH"' \\
-        | bcftools query -f '%ID\\t%CHROM\\t%POS\\t%CHR2\\t%END\\t%QUAL\\t%SVLEN\\t%FILTER\\t[%GT]\\t%ANN\\n' \\
+        | bcftools query -f '%ID\\t%CHROM\\t%POS\\t%CHR2\\t%POS2\\t%QUAL\\t%SVLEN\\t%CHREND\\t%FILTER\\t[%GT]\\t%ANN\\n' \\
         | awk '{
             OFS="\\t";
-            split(\$10,ann,",");
+            split(\$11,ann,",");
             annotation="";
             for(i in ann)
             {
@@ -123,8 +123,13 @@ process SV_VARIANT_ANNOTATE {
                     annotation=annotation"\\t"f[4]"\\t"f[1]"|"f[2]"|"f[3]
                 }
             }
-            print \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9annotation
-            }' > ${meta}.sv.ann.high_risk.csv
+            print \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10annotation
+            }' > tmp.high_risk.csv
+
+    # add rmsk annotation
+    awk -F "\\t" '{OFS="\\t"; print \$2,\$3-1,\$3}' tmp.high_risk.csv | bedtools intersect -a stdin -b ${params.rmsk_path} -wao | cut -f7 > tmp1
+    awk -F "\\t" '{OFS="\\t"; print \$4,\$5-1,\$5}' tmp.high_risk.csv | bedtools intersect -a stdin -b ${params.rmsk_path} -wao | cut -f7 > tmp2
+    paste tmp.high_risk.csv tmp1 tmp2 > ${meta}.sv.ann.high_risk.csv
     """
 }
 

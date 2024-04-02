@@ -2,6 +2,7 @@
 
 import sys
 import gzip
+import re
 from io import BufferedReader
 from subprocess import check_output
 from os.path import exists
@@ -31,12 +32,16 @@ class VcfRecord:
                 self.infoDict[items[0]] = items[1]
 
         self.mateChr = self.chr
-        self.matePos = -1
+        if "END" in self.infoDict:
+            self.matePos = int(self.infoDict["END"])
+        else:
+            self.matePos = -1
 
         if self.infoDict["SVTYPE"] == "BND":
             items = self.alt.replace("[", " ").replace("]", " ").split(" ")
             [self.mateChr, matePos] = items[1].split(':')
             self.matePos = int(matePos)
+            self.mateChr = self.mateChr.replace("CHR", "chr")
 
     def makeLine(self):
         infoStr = ";".join(self.info)
@@ -46,6 +51,7 @@ class VcfRecord:
 
 def scanVcf(vcfFile):
     bnd_mate_dict = {}
+    chr_dict = {}
 
     if vcfFile.endswith('gz'):
         gzfp = gzip.open(vcfFile, 'rb')
@@ -56,6 +62,9 @@ def scanVcf(vcfFile):
     for line in fpVcf.readlines():
         line = line.decode()
         if line[0] == '#':
+            if "##contig" in line:
+                m = re.match("##contig=<ID=(.+),length=(\d+)>", line)
+                chr_dict[m.group(1)] = int(m.group(2))
             continue
 
         vcfRec = VcfRecord(line)
@@ -67,7 +76,7 @@ def scanVcf(vcfFile):
                 mateId = vcfRec.infoDict["MATEID"]
                 bnd_mate_dict[mateId] = ""
 
-    return bnd_mate_dict
+    return bnd_mate_dict, chr_dict
 
 
 def writeLines(lines):
@@ -75,7 +84,7 @@ def writeLines(lines):
         sys.stdout.write(line)
 
 
-def convertBND(vcfFile, bndMateDict):
+def convertBND(vcfFile, bndMateDict, chrDict):
     isHeaderInfoAdded = False
     lineBuffer = []
     bufferedChr = ""
@@ -93,13 +102,19 @@ def convertBND(vcfFile, bndMateDict):
             if (not isHeaderInfoAdded) and line.startswith("##FORMAT="):
                 sys.stdout.write(
                     "##INFO=<ID=CHR2,Number=1,Type=String,Description=\"Chromosome for END coordinate\">\n")
+                sys.stdout.write(
+                    "##INFO=<ID=POS2,Number=1,Type=Integer,Description=\"End position of the variant\">\n")
+                sys.stdout.write(
+                    "##INFO=<ID=CHREND,Number=1,Type=String,Description=\"The short distance to the chromosome end\">\n")
                 isHeaderInfoAdded = True
 
             sys.stdout.write(line)
             continue
 
         vcfRec = VcfRecord(line)
-        vcfRec.info.append("CHR2=%s" % vcfRec.mateChr.replace("CHR", "chr"))
+        vcfRec.info.append("CHR2=%s" % vcfRec.mateChr)
+        vcfRec.info.append("POS2=%d" % int(vcfRec.matePos))
+        vcfRec.info.append("CHREND=%d,%d" % (min(vcfRec.pos - 1, chrDict[vcfRec.chr] - vcfRec.pos), min(vcfRec.matePos - 1, chrDict[vcfRec.mateChr] - vcfRec.matePos)))
 
         # skip mate record
         if vcfRec.vid in bndMateDict:
@@ -114,10 +129,7 @@ def convertBND(vcfFile, bndMateDict):
             idx = vidSuffix.rfind(':')
             vcfRec.vid = "DRAGEN:BND%s" % vidSuffix[:idx]
 
-            # add END
-            infoEndStr = "END=%d" % vcfRec.matePos
-            newInfo = [infoEndStr]
-
+            newInfo = []
             for infoItem in vcfRec.info:
                 # skip BND-specific tags
                 if infoItem.startswith("MATEID") or infoItem.startswith("BND_DEPTH") or infoItem.startswith("MATE_BND_DEPTH"):
@@ -163,5 +175,5 @@ if __name__ == '__main__':
         sys.exit(1)
 
     vcfFile = sys.argv[1]
-    bndMateDict = scanVcf(vcfFile)
-    convertBND(vcfFile, bndMateDict)
+    bndMateDict, chrDict = scanVcf(vcfFile)
+    convertBND(vcfFile, bndMateDict, chrDict)
