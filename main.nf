@@ -1,22 +1,11 @@
 //
 nextflow.enable.dsl=2
 
-// Define the default parameters
-params.dragen_path = ''
-params.target_bed = ''
-params.snpeff_db = 'GRCh38.99'
-params.reference_path = '/home/ubuntu/annotation/fasta/hg38.fa'
-params.outdir = './'
-params.samtools_path = '/home/ubuntu/bin/samtools'
-params.rmsk_path = '/home/ubuntu/annotation/hg38.rmsk.bed'
-
 process SNV_VARIANT_ANNOTATE {
-    publishDir "${params.outdir}", mode: 'copy'
+    publishDir "${params.outdir}/${meta}", mode: 'copy'
 
     input:
     tuple val(meta), path(vcf), path(vcf_index)
-    val db
-    path target_bed
 
     output:
     tuple val(meta), path("*.ann.vcf"), emit: vcf
@@ -24,11 +13,11 @@ process SNV_VARIANT_ANNOTATE {
 
     script:
     """
-    snpeff -canon -noInteraction -motif $db -filterInterval $target_bed -stats ${meta}.summary.html $vcf > ${meta}.ann.vcf
+    snpeff -canon -noInteraction -motif ${params.snpeff_db} -filterInterval ${params.target_bed} -stats ${meta}.summary.html ${vcf} > ${meta}.ann.vcf
 
     # only keep the variants with PASS and high risk
     bcftools view ${meta}.ann.vcf -i 'FILTER="PASS" && ANN ~ "HIGH"' \\
-        | bcftools query -f '%CHROM\\t%POS\\t%REF\\t%ALT\\t%QUAL\\t%FILTER\\t[%GT]\\t%QD\\t%ANN\\n' \\
+        | bcftools query -f '%CHROM\\t%POS\\t%REF\\t%ALT\\t%QUAL\\t%FILTER\\t[%GT]\\t[%AF]\\t%ANN\\n' \\
         | awk '{
             OFS="\\t";
             split(\$9,ann,",");
@@ -48,12 +37,10 @@ process SNV_VARIANT_ANNOTATE {
 }
 
 process CNV_VARIANT_ANNOTATE {
-    publishDir "${params.outdir}", mode: 'copy'
+    publishDir "${params.outdir}/${meta}", mode: 'copy'
 
     input:
     tuple val(meta), path(vcf), path(vcf_index)
-    val db
-    path target_bed
 
     output:
     tuple val(meta), path("*.ann.vcf"), emit: vcf
@@ -61,7 +48,7 @@ process CNV_VARIANT_ANNOTATE {
 
     script:
     """
-    snpeff -canon -noInteraction -motif $db -filterInterval $target_bed -stats ${meta}.summary.html $vcf > ${meta}.cnv.ann.vcf
+    snpeff -canon -noInteraction -motif ${params.snpeff_db} -filterInterval ${params.target_bed} -stats ${meta}.summary.html ${vcf} > ${meta}.cnv.ann.vcf
 
     # only keep the variants with PASS and high risk
     bcftools view ${meta}.cnv.ann.vcf -i 'FILTER="PASS" && SVTYPE="CNV" && ANN ~ "HIGH"' \\
@@ -81,17 +68,13 @@ process CNV_VARIANT_ANNOTATE {
             print \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8annotation
             }' > ${meta}.cnv.ann.high_risk.csv
     """
-
 }
 
 process SV_VARIANT_ANNOTATE {
-    publishDir "${params.outdir}", mode: 'copy'
-    errorStrategy 'ignore'
+    publishDir "${params.outdir}/${meta}", mode: 'copy'
 
     input:
     tuple val(meta), path(vcf), path(vcf_index)
-    val db
-    path target_bed
 
     output:
     tuple val(meta), path("*.sv.ann.std.vcf.gz"), emit: vcf
@@ -100,17 +83,25 @@ process SV_VARIANT_ANNOTATE {
     script:
     """
     # convert BND to inversion
-    convertInversion.py ${params.samtools_path} ${params.reference_path} $vcf | bcftools view - -o tmp.vcf.gz -O z
+    convertInversion.py ${params.samtools_path} ${params.reference_path} ${vcf} | bcftools view - -o tmp.vcf.gz -O z
 
     # snpEff annotation
-    snpeff -canon -noInteraction -motif $db -filterInterval $target_bed -stats ${meta}.summary.html tmp.vcf.gz > ${meta}.sv.ann.vcf
+    snpeff -canon -noInteraction -motif ${params.snpeff_db} -filterInterval ${params.target_bed} -stats ${meta}.summary.html tmp.vcf.gz > ${meta}.sv.ann.vcf
+
+    #
+    if [ ! -s ${meta}.sv.ann.vcf ]
+    then
+        touch ${meta}.sv.ann.high_risk.csv
+        touch ${meta}.sv.ann.std.vcf.gz
+        exit 0
+    fi
 
     # standardize vcf
     convertBND.py ${meta}.sv.ann.vcf | bcftools view - -o ${meta}.sv.ann.std.vcf.gz -O z
 
     # only keep the variants with PASS and high risk
     bcftools view ${meta}.sv.ann.std.vcf.gz -i 'FILTER="PASS" && ANN ~ "HIGH"' \\
-        | bcftools query -f '%ID\\t%CHROM\\t%POS\\t%CHR2\\t%POS2\\t%QUAL\\t%SVLEN\\t%CHREND\\t%FILTER\\t[%GT]\\t%ANN\\n' \\
+        | bcftools query -f '%ID\\t%CHROM\\t%POS\\t%CHR2\\t%POS2\\t%QUAL\\t%SVLEN\\t%CHREND\\t%FILTER\\t[%SR]\\t%ANN\\n' \\
         | awk '{
             OFS="\\t";
             split(\$11,ann,",");
@@ -129,7 +120,8 @@ process SV_VARIANT_ANNOTATE {
     # add rmsk annotation
     awk -F "\\t" '{OFS="\\t"; print \$2,\$3-1,\$3}' tmp.high_risk.csv | bedtools intersect -a stdin -b ${params.rmsk_path} -wao | cut -f7 > tmp1
     awk -F "\\t" '{OFS="\\t"; print \$4,\$5-1,\$5}' tmp.high_risk.csv | bedtools intersect -a stdin -b ${params.rmsk_path} -wao | cut -f7 > tmp2
-    paste tmp.high_risk.csv tmp1 tmp2 > ${meta}.sv.ann.high_risk.csv
+    cut -f1-8 tmp.high_risk.csv | paste - tmp1 tmp2 > tmp3
+    cut -f9- tmp.high_risk.csv | paste tmp3 - > ${meta}.sv.ann.high_risk.csv
     """
 }
 
@@ -164,12 +156,11 @@ workflow {
              }
 
     // small variants annotation
-    SNV_VARIANT_ANNOTATE(snv_vcf, params.snpeff_db, params.target_bed)
+    SNV_VARIANT_ANNOTATE(snv_vcf)
     // CNV variants annotation
-    CNV_VARIANT_ANNOTATE(cnv_vcf, params.snpeff_db, params.target_bed)
+    CNV_VARIANT_ANNOTATE(cnv_vcf)
     // SV variants annotation
-    SV_VARIANT_ANNOTATE(sv_vcf, params.snpeff_db, params.target_bed)
-
+    SV_VARIANT_ANNOTATE(sv_vcf)
 }
 
 workflow.onComplete {
