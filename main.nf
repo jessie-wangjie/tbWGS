@@ -17,8 +17,8 @@ process SNV_VARIANT_ANNOTATE {
 
     # only keep the variants with PASS and high risk
     bcftools view ${meta}.ann.vcf -i 'FILTER="PASS" && ANN ~ "HIGH"' \\
-        | bcftools query -f '%CHROM\\t%POS\\t%REF\\t%ALT\\t%QUAL\\t%FILTER\\t[%GT]\\t[%AF]\\t%ANN\\n' \\
-        | awk '{
+        | bcftools query -u -f '%CHROM\\t%POS\\t%REF\\t%ALT\\t%QUAL\\t%FILTER\\t[%GT;]\\t[%AF;]\\t%ANN\\n' \\
+        | awk -F "\\t" '{
             OFS="\\t";
             split(\$9,ann,",");
             annotation="";
@@ -52,8 +52,8 @@ process CNV_VARIANT_ANNOTATE {
 
     # only keep the variants with PASS and high risk
     bcftools view ${meta}.cnv.ann.vcf -i 'FILTER="PASS" && SVTYPE="CNV" && ANN ~ "HIGH"' \\
-        | bcftools query -f '%ID\\t%CHROM\\t%POS\\t%END\\t%ALT\\t%QUAL\\t%FILTER\\t[%GT]\\t%ANN\\n' \\
-        | awk '{
+        | bcftools query -u -f '%ID\\t%CHROM\\t%POS\\t%END\\t%ALT\\t%QUAL\\t%FILTER\\t[%GT;]\\t%ANN\\n' \\
+        | awk -F "\\t" '{
             OFS="\\t";
             split(\$9,ann,",");
             annotation="";
@@ -101,8 +101,8 @@ process SV_VARIANT_ANNOTATE {
 
     # only keep the variants with PASS and high risk
     bcftools view ${meta}.sv.ann.std.vcf.gz -i 'FILTER="PASS" && ANN ~ "HIGH"' \\
-        | bcftools query -f '%ID\\t%CHROM\\t%POS\\t%CHR2\\t%POS2\\t%QUAL\\t%SVLEN\\t%CHREND\\t%FILTER\\t[%SR]\\t%ANN\\n' \\
-        | awk '{
+        | bcftools query -u -f '%ID\\t%CHROM\\t%POS\\t%CHR2\\t%POS2\\t%QUAL\\t%SVLEN\\t%CHREND\\t%FILTER\\t[%GT;]\\t%ANN\\n' \\
+        | awk -F "\\t" '{
             OFS="\\t";
             split(\$11,ann,",");
             annotation="";
